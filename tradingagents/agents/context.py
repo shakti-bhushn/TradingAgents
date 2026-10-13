@@ -124,7 +124,33 @@ def build_instrument_context(
     on the analysis date.
     """
     is_crypto = asset_type == "crypto"
-    instrument_label = "asset" if is_crypto else "instrument"
+    # ASSET-CLASS awareness. Out of the box TradingAgents only knew "crypto vs company", so every non-stock
+    # instrument (metal, energy, index, forex pair) ran the stock path, got labelled a "Company", and the
+    # fundamentals agent would hallucinate earnings/balance sheets that don't exist for it. We RESOLVE the ticker
+    # first (so both the spot/broker symbol the user trades — XAUUSD, USOIL, EURUSD, US500 — and the Yahoo proxy
+    # it maps to — GC=F, CL=F, EURUSD=X, ^GSPC — are caught) and classify by the resolved symbol's shape:
+    #   "=F" -> commodity (metals/energy) · "^..." -> index/basket · "=X" -> forex pair · else -> company (stock)
+    def _asset_class(t):
+        if asset_type in ("commodity", "index", "forex"):
+            return asset_type
+        if not isinstance(t, str):
+            return "company"
+        try:
+            from ..dataflows.symbols import normalize_symbol
+            resolved = normalize_symbol(t)
+        except Exception:
+            resolved = t
+        r = resolved.upper() if isinstance(resolved, str) else ""
+        if r.endswith("=F"):
+            return "commodity"
+        if r.startswith("^"):
+            return "index"
+        if r.endswith("=X"):
+            return "forex"
+        return "company"
+    aclass = "crypto" if is_crypto else _asset_class(ticker)
+    non_company = aclass != "company"
+    instrument_label = "asset" if non_company else "instrument"
     context = (
         f"The {instrument_label} to analyze is `{ticker}`. "
         "The tools serve this instrument; refer to it by this exact ticker in every report and recommendation, "
@@ -133,7 +159,7 @@ def build_instrument_context(
 
     identity = identity or {}
     name = identity.get("company_name") or identity.get("name")
-    label = "Name" if is_crypto else "Company"
+    label = "Name" if non_company else "Company"
     details = []
     if is_historical(trade_date):
         if name:
@@ -161,10 +187,32 @@ def build_instrument_context(
             "result explicitly disproves this resolved identity."
         )
 
-    if is_crypto:
+    if aclass == "crypto":
         context += (
             " Treat it as a crypto asset rather than a company, and do not "
             "assume company fundamentals are available."
+        )
+    elif aclass == "commodity":
+        context += (
+            " Treat it as a commodity / futures contract (a metal or energy), NOT a company: it has no company "
+            "fundamentals — no earnings, balance sheet, P/E or revenue. Do not fetch or invent company financials. "
+            "What drives it is macro and supply/demand: real yields, the US dollar (DXY), central-bank and ETF "
+            "flows, inventories/production, and geopolitics. Weigh those instead of corporate fundamentals."
+        )
+    elif aclass == "index":
+        context += (
+            " Treat it as a stock INDEX / basket, NOT a single company: it has no single-company fundamentals "
+            "(no one earnings report or balance sheet). Do not fetch or invent a single company's financials. "
+            "What drives it is broad market conditions: macro (rates, growth, inflation, central-bank policy), "
+            "market breadth, sector leadership, risk sentiment, and its major constituents' earnings only in "
+            "aggregate. Weigh those instead of corporate fundamentals."
+        )
+    elif aclass == "forex":
+        context += (
+            " Treat it as a FOREX pair, NOT a company: it has no company fundamentals. What drives it is the two "
+            "currencies' interest-rate differential and central-bank policy (Fed, ECB, BoJ, BoE, ...), relative "
+            "growth/inflation, and risk / safe-haven flows. Analyze the rate differential and macro backdrop, "
+            "not corporate financials."
         )
     return context
 
