@@ -1,0 +1,3 @@
+# Sidecar-only deps. TradingAgents itself (and its LLM/langchain stack) comes from `pip install -e .` at the repo root.
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
